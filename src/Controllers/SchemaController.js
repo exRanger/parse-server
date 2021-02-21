@@ -689,7 +689,7 @@ export default class SchemaController {
 
   constructor(databaseAdapter: StorageAdapter) {
     this._dbAdapter = databaseAdapter;
-    this.schemaData = new SchemaData(SchemaCache.get(), this.protectedFields);
+    this.schemaData = new SchemaData(SchemaCache.all(), this.protectedFields);
     this.protectedFields = Config.get(Parse.applicationId).protectedFields;
 
     const customIds = Config.get(Parse.applicationId).allowCustomObjectId;
@@ -728,7 +728,7 @@ export default class SchemaController {
     if (options.clearCache) {
       return this.setAllClasses();
     }
-    const cached = SchemaCache.get();
+    const cached = SchemaCache.all();
     if (cached && cached.length) {
       return Promise.resolve(cached);
     }
@@ -762,7 +762,7 @@ export default class SchemaController {
         indexes: data.indexes,
       });
     }
-    const cached = SchemaCache.get().find(schema => schema.className === className);
+    const cached = SchemaCache.all().find(schema => schema.className === className);
     if (cached && !options.clearCache) {
       return Promise.resolve(cached);
     }
@@ -782,7 +782,7 @@ export default class SchemaController {
   // on success, and rejects with an error on fail. Ensure you
   // have authorization (master key, or client class creation
   // enabled) before calling this function.
-  addClassIfNotExists(
+  async addClassIfNotExists(
     className: string,
     fields: SchemaFields = {},
     classLevelPermissions: any,
@@ -797,9 +797,8 @@ export default class SchemaController {
       }
       return Promise.reject(validationError);
     }
-
-    return this._dbAdapter
-      .createClass(
+    try {
+      const adapterSchema = await this._dbAdapter.createClass(
         className,
         convertSchemaToAdapterSchema({
           fields,
@@ -807,18 +806,25 @@ export default class SchemaController {
           indexes,
           className,
         })
-      )
-      .then(convertAdapterSchemaToParseSchema)
-      .catch(error => {
-        if (error && error.code === Parse.Error.DUPLICATE_VALUE) {
-          throw new Parse.Error(
-            Parse.Error.INVALID_CLASS_NAME,
-            `Class ${className} already exists.`
-          );
-        } else {
-          throw error;
-        }
-      });
+      );
+      const parseSchema = convertAdapterSchemaToParseSchema(adapterSchema);
+      const allSchema = SchemaCache.all();
+      const index = allSchema.findIndex(cached => cached.className === parseSchema.className);
+      if (index >= 0) {
+        allSchema[index] = parseSchema;
+      } else {
+        allSchema.push(parseSchema);
+      }
+      SchemaCache.put(allSchema);
+      await this.reloadData();
+      return parseSchema;
+    } catch (error) {
+      if (error && error.code === Parse.Error.DUPLICATE_VALUE) {
+        throw new Parse.Error(Parse.Error.INVALID_CLASS_NAME, `Class ${className} already exists.`);
+      } else {
+        throw error;
+      }
+    }
   }
 
   updateClass(
@@ -931,30 +937,26 @@ export default class SchemaController {
       return Promise.resolve(this);
     }
     // We don't have this class. Update the schema
-    return (
-      this.addClassIfNotExists(className)
-        // The schema update succeeded. Reload the schema
-        .then(() => this.reloadData({ clearCache: true }))
-        .catch(() => {
-          // The schema update failed. This can be okay - it might
-          // have failed because there's a race condition and a different
-          // client is making the exact same schema update that we want.
-          // So just reload the schema.
-          return this.reloadData({ clearCache: true });
-        })
-        .then(() => {
-          // Ensure that the schema now validates
-          if (this.schemaData[className]) {
-            return this;
-          } else {
-            throw new Parse.Error(Parse.Error.INVALID_JSON, `Failed to add ${className}`);
-          }
-        })
-        .catch(() => {
-          // The schema still doesn't validate. Give up
-          throw new Parse.Error(Parse.Error.INVALID_JSON, 'schema class name does not revalidate');
-        })
-    );
+    return this.addClassIfNotExists(className)
+      .catch(() => {
+        // The schema update failed. This can be okay - it might
+        // have failed because there's a race condition and a different
+        // client is making the exact same schema update that we want.
+        // So just reload the schema.
+        return this.reloadData({ clearCache: true });
+      })
+      .then(() => {
+        // Ensure that the schema now validates
+        if (this.schemaData[className]) {
+          return this;
+        } else {
+          throw new Parse.Error(Parse.Error.INVALID_JSON, `Failed to add ${className}`);
+        }
+      })
+      .catch(() => {
+        // The schema still doesn't validate. Give up
+        throw new Parse.Error(Parse.Error.INVALID_JSON, 'schema class name does not revalidate');
+      });
   }
 
   validateNewClass(className: string, fields: SchemaFields = {}, classLevelPermissions: any): any {
@@ -1050,7 +1052,7 @@ export default class SchemaController {
     }
     validateCLP(perms, newSchema, this.userIdRegEx);
     await this._dbAdapter.setClassLevelPermissions(className, perms);
-    const cached = SchemaCache.get().find(schema => schema.className === className);
+    const cached = SchemaCache.all().find(schema => schema.className === className);
     if (cached) {
       cached.classLevelPermissions = perms;
     }
