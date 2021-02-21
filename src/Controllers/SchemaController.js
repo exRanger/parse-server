@@ -1122,6 +1122,10 @@ export default class SchemaController {
         return Promise.resolve();
       })
       .then(() => {
+        const cached = SchemaCache.get(className);
+        if (cached && !cached.fields[fieldName]) {
+          cached.fields[fieldName] = type;
+        }
         return {
           className,
           fieldName,
@@ -1247,7 +1251,7 @@ export default class SchemaController {
     const enforceFields = results.filter(result => !!result);
 
     if (enforceFields.length !== 0) {
-      await this.reloadData({ clearCache: true });
+      await this.reloadData();
     }
     this.ensureFields(enforceFields);
 
