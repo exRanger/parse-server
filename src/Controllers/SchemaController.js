@@ -1245,6 +1245,7 @@ export default class SchemaController {
     }
     const results = await Promise.all(promises);
     const enforceFields = results.filter(result => !!result);
+    this.ensureFields(enforceFields);
 
     if (enforceFields.length !== 0) {
       const cached = SchemaCache.get(className);
@@ -1253,7 +1254,6 @@ export default class SchemaController {
       });
       await this.reloadData();
     }
-    this.ensureFields(enforceFields);
 
     const promise = Promise.resolve(schema);
     return thenValidateRequiredColumns(promise, className, object, query);
